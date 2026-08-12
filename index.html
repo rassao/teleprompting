@@ -86,6 +86,21 @@
   }
   #startBtn:active { background: #256428; }
 
+  /* ---------- PEDAL CONFIG ---------- */
+  #pedalConfig { gap: 8px; }
+  #pedalConfig .hint { font-size: 12px; color: #aaa; margin: 2px 0; line-height: 1.35; }
+  .pedal-bind { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .pedal-bind .bind-name { flex: 1; }
+  .bind-btn {
+    background: #333; color: #fff; border: 1px solid #555;
+    border-radius: 6px; padding: 6px 10px; font-size: 13px;
+  }
+  .bind-btn:active { background: #444; }
+  .bind-label {
+    min-width: 84px; text-align: right;
+    color: #8fe0c0; font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+
   /* ---------- READ SCREEN ---------- */
   #readScreen {
     position: fixed;
@@ -239,6 +254,32 @@
     <input type="range" id="wpmSlider" min="60" max="350" step="10" value="140">
   </div>
 
+  <div class="control-row">
+    <label style="justify-content:flex-start;">Controle da rolagem</label>
+    <div style="display:flex; gap:16px;">
+      <label style="justify-content:flex-start; gap:6px;">
+        <input type="radio" name="controlMode" value="volume" style="width:auto;"> 🔊 Som
+      </label>
+      <label style="justify-content:flex-start; gap:6px;">
+        <input type="radio" name="controlMode" value="pedal" style="width:auto;"> 🦶 Pedal
+      </label>
+    </div>
+  </div>
+
+  <div class="control-row" id="pedalConfig" hidden>
+    <p class="hint">Pareie o pedal pelo Bluetooth do celular. Coloque-o num modo que envie setas ou Page Up/Down (evite os modos de "volume", que o sistema intercepta). Toque em Detectar e pise no pedal para gravar a tecla.</p>
+    <div class="pedal-bind">
+      <span class="bind-name">▶ ⏸ Ligar / pausar rolagem</span>
+      <button type="button" id="bindToggleBtn" class="bind-btn">Detectar</button>
+      <span id="bindToggleLabel" class="bind-label">—</span>
+    </div>
+    <div class="pedal-bind">
+      <span class="bind-name">↑ Voltar um pouco</span>
+      <button type="button" id="bindBackBtn" class="bind-btn">Detectar</button>
+      <span id="bindBackLabel" class="bind-label">—</span>
+    </div>
+  </div>
+
   <div class="preview-wrap">
     <div id="previewText"></div>
   </div>
@@ -301,7 +342,9 @@
     fontSize: 32,
     marginPercent: 8,
     mirror: false,
-    wpm: 140
+    wpm: 140,
+    controlMode: "volume", // 'volume' | 'pedal'
+    pedalBindings: { toggle: "", back: "" }
   };
 
   function loadState() {
@@ -309,6 +352,9 @@
       const raw = localStorage.getItem(LS_KEY);
       if (raw) Object.assign(state, JSON.parse(raw));
     } catch (e) { /* ignore corrupt storage */ }
+    if (!state.pedalBindings || typeof state.pedalBindings !== "object") {
+      state.pedalBindings = { toggle: "", back: "" };
+    }
   }
   function saveState() {
     try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch (e) { /* storage full/unavailable */ }
@@ -329,6 +375,13 @@
   const wpmValue = document.getElementById("wpmValue");
   const previewText = document.getElementById("previewText");
   const startBtn = document.getElementById("startBtn");
+
+  const controlModeRadios = document.querySelectorAll('input[name="controlMode"]');
+  const pedalConfig = document.getElementById("pedalConfig");
+  const bindToggleBtn = document.getElementById("bindToggleBtn");
+  const bindToggleLabel = document.getElementById("bindToggleLabel");
+  const bindBackBtn = document.getElementById("bindBackBtn");
+  const bindBackLabel = document.getElementById("bindBackLabel");
 
   const scrollContainerEl = document.getElementById("scrollContainer");
   const scriptTextEl = document.getElementById("scriptText");
@@ -429,8 +482,52 @@
     marginSlider.value = state.marginPercent;
     mirrorToggle.checked = state.mirror;
     wpmSlider.value = state.wpm;
+    updateControlModeUI();
+    renderBindings();
     applyEditStyles();
   }
+
+  // ---- control mode + pedal key binding (edit screen) ----
+  function updateControlModeUI() {
+    controlModeRadios.forEach((r) => { r.checked = (r.value === state.controlMode); });
+    pedalConfig.hidden = (state.controlMode !== "pedal");
+  }
+
+  function renderBindings() {
+    bindToggleLabel.textContent = state.pedalBindings.toggle || "—";
+    bindBackLabel.textContent = state.pedalBindings.back || "—";
+    bindToggleBtn.textContent = "Detectar";
+    bindBackBtn.textContent = "Detectar";
+  }
+
+  controlModeRadios.forEach((r) => {
+    r.addEventListener("change", () => {
+      if (!r.checked) return;
+      state.controlMode = r.value;
+      updateControlModeUI();
+      saveState();
+    });
+  });
+
+  let capturingAction = null;
+  function beginCapture(action, btn) {
+    capturingAction = action;
+    renderBindings();
+    btn.textContent = "Pise no pedal…";
+  }
+  bindToggleBtn.addEventListener("click", () => beginCapture("toggle", bindToggleBtn));
+  bindBackBtn.addEventListener("click", () => beginCapture("back", bindBackBtn));
+
+  // Captures whatever key the paired pedal emits, in whatever mode it's set to.
+  document.addEventListener("keydown", (e) => {
+    if (!capturingAction) return;
+    e.preventDefault();
+    const code = (e.code && e.code.length) ? e.code : e.key;
+    state.pedalBindings[capturingAction] = code;
+    capturingAction = null;
+    renderBindings();
+    saveState();
+  });
 
   scriptInput.addEventListener("input", () => {
     state.scriptText = scriptInput.value;
@@ -464,6 +561,10 @@
       return;
     }
     saveState();
+    if (state.controlMode === "pedal") {
+      enterReadScreen(); // pedal mode needs no microphone
+      return;
+    }
     micError.hidden = true;
     micModal.hidden = false;
   });
@@ -488,9 +589,10 @@
   // Reading screen state
   // ---------------------------------------------------------------
   let currentIndex = 0;
-  let mode = "speech"; // 'speech' | 'volume'
+  let mode = "speech"; // 'speech' | 'volume' | 'pedal'
   let usingFallback = false;
   let paused = false;
+  let pedalScrolling = false;
 
   let recognition = null;
   let recognitionFailures = 0;
@@ -724,6 +826,8 @@
       if (mode === "volume") {
         updateVolumeLevel();
         if (isSpeakingVolume) targetScrollTop += fallbackSpeedPxPerSec() * dt;
+      } else if (mode === "pedal") {
+        if (pedalScrolling) targetScrollTop += fallbackSpeedPxPerSec() * dt;
       }
       scrollContainerEl.scrollTop += (targetScrollTop - scrollContainerEl.scrollTop) * 0.35;
     }
@@ -847,18 +951,25 @@
     scriptTextEl.style.paddingRight = state.marginPercent + "%";
     scriptTextEl.classList.toggle("mirrored", state.mirror);
 
-    playPauseBtn.textContent = "⏸";
     editScreen.hidden = true;
     readScreen.hidden = false;
     scrollContainerEl.scrollTop = 0;
 
     requestWakeLock();
 
-    // Volume-based scrolling is the primary mode: it's local and instant,
-    // with no cloud round-trip or stall risk. Speech-tracking code stays in
-    // place (switchToFallback's counterpart, startSpeechMode) but isn't
-    // used automatically for now.
-    switchToFallback();
+    if (state.controlMode === "pedal") {
+      // Pedal mode: no mic. A bound pedal key toggles constant-speed
+      // scrolling (see handlePedalKey / setPedalScrolling).
+      mode = "pedal";
+      setPedalScrolling(false);
+    } else {
+      // Volume-based scrolling is the primary mode: it's local and instant,
+      // with no cloud round-trip or stall risk. Speech-tracking code stays in
+      // place (switchToFallback's counterpart, startSpeechMode) but isn't
+      // used automatically for now.
+      playPauseBtn.textContent = "⏸";
+      switchToFallback();
+    }
 
     if (rafId === null) rafId = requestAnimationFrame(readLoop);
   }
@@ -906,6 +1017,10 @@
   });
 
   playPauseBtn.addEventListener("click", () => {
+    if (mode === "pedal") {
+      setPedalScrolling(!pedalScrolling);
+      return;
+    }
     paused = !paused;
     playPauseBtn.textContent = paused ? "▶" : "⏸";
     if (mode === "speech" && recognition) {
@@ -924,6 +1039,30 @@
   speedPlusBtn.addEventListener("click", () => {
     state.wpm = Math.min(350, state.wpm + 15);
     saveState();
+  });
+
+  // ---- pedal mode (reading screen) ----
+  function setPedalScrolling(on) {
+    pedalScrolling = on;
+    playPauseBtn.textContent = on ? "⏸" : "▶";
+    modeIndicatorEl.textContent = on ? "🦶 Pedal (rolando)" : "🦶 Pedal (parado)";
+  }
+
+  function handlePedalKey(e) {
+    const code = (e.code && e.code.length) ? e.code : e.key;
+    const b = state.pedalBindings || {};
+    if (b.toggle && code === b.toggle) {
+      e.preventDefault();
+      setPedalScrolling(!pedalScrolling);
+    } else if (b.back && code === b.back) {
+      e.preventDefault();
+      const line = state.fontSize * 1.6;
+      targetScrollTop = Math.max(0, targetScrollTop - line * 2);
+    }
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (mode === "pedal" && !readScreen.hidden) handlePedalKey(e);
   });
 
   // ---- jump to ----
